@@ -1,0 +1,779 @@
+#! /usr/bin/env bash
+
+# Misc 
+
+os_detect() {
+  case $(uname) in
+    Linux)
+      OS_TYPE="Linux"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  if [ -f /etc/lsb-release ]; then
+    . /etc/lsb-release
+    DIST=$DISTRIB_ID
+    DIST_VER=$DISTRIB_RELEASE
+  else
+    DIST="Unknown"
+    DIST_VER="Unknown"
+  fi
+  if [ -f /etc/debian_version ]; then
+    OS="Debian"
+    VER=$(cat /etc/debian_version)
+  elif [ -f /etc/redhat-release ]; then
+    OS="Red Hat"
+    VER=$(cat /etc/redhat-release)
+  elif [ -f /etc/SuSE-release ]; then
+    OS="SuSE"
+    VER=$(cat /etc/SuSE-release)
+  else
+    OS=$(uname -s)
+    VER=$(uname -r)
+  fi
+  case "$(uname -p)" in
+    x86_64|amd64)
+      ARCH="amd64"
+      ;;
+    i386|i586|i686)
+      ARCH="i386"
+      ;;
+  esac
+  echo "DIST='$DIST'; DIST_VER='$DIST_VER'; OS='$OS'; VER='$VER'; ARCH='$ARCH';"
+}
+
+get_workdir() {
+  wdir="$(dirname "$0")"
+  if [ -n "$tmp_virt_wdir" ]; then
+     wdir="$tmp_virt_wdir"
+  fi
+  echo "$(cd "$wdir" && pwd)"
+}
+
+get_wdir() {
+  get_workdir
+}
+
+get_basename() {
+  basename "$0"
+}
+
+cond_echo() {
+  case "$1" in
+    yes|true|print|0) echo "$2" ;;
+    *) : ;;
+  esac
+}
+
+# Project root
+
+is_proj_root() {
+  print="$1"
+  f="$(get_wdir)/proj_root" 
+  [ -e "$f" ] && cond_echo "$print" "Yes" && return 0
+  cond_echo "$print" "No" && return 1
+}
+
+set_proj_root_here() {
+  f="$(get_wdir)/proj_root" 
+  touch "$f"
+}
+
+unset_proj_root_here() {
+  f="$(get_wdir)/proj_root" 
+  [ -e "$f" ] && rm "$f"
+}
+
+show_proj_list() {
+  (cd "$(get_wdir)" && find -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+	| egrep -vi 'iso|definitions' | sort)
+}
+
+mk_proj() {
+  name="$1"
+  [ -z "$name" ] && echo "Error: project name isn't set" && return 1
+  tmpl_name="$2"
+  case "$name" in
+    iso|definitions) echo "Error: 'iso' and 'definitions' are prohibited names" && return 2 ;;
+  esac
+  f="$(get_wdir)/$name"
+  [ -e "$f" ] || mkdir -p "$f"
+  cd "$f" && [ ! -e $(get_basename) ] && ln -s ../$(get_basename) && cd "$(get_wdir)"
+  [ -d "$f" ] && cd "$f" && (
+    tmp_virt_wdir="$(get_wdir)/$name"
+    set_tmpl_name "$name"
+    tmp_virt_wdir=""
+  )
+}
+
+mv_proj_files() {
+  show_proj_list | while read proj; do
+    echo "Processing '$proj' ..."
+    (
+      tmp_virt_wdir="$(get_wdir)/$proj"
+      f="$tmp_virt_wdir"
+      mv_files
+      tmp_virt_wdir=""
+    )
+  done
+}
+
+clean_proj_files() {
+  show_proj_list | while read proj; do
+    echo "Processing '$proj' ..."
+    (
+      tmp_virt_wdir="$(get_wdir)/$proj"
+      clean_files
+      tmp_virt_wdir=""
+    )
+  done
+}
+
+proj_tmpl_set() {
+  name="$1"
+  f="$(get_wdir)/$name"
+  [ -d "$f" ] && cd "$f" && (
+    tmp_virt_wdir="$(get_wdir)/$name"
+    set_tmpl_name "$name"
+    tmp_virt_wdir=""
+  )
+}
+
+# Project
+
+get_proj_name() {
+  echo "$(basename "$(cd "$(get_wdir)" && pwd)")"
+}
+
+is_proj() {
+  print="$1"
+  cd "$(get_wdir)" && [ -L "$(get_basename)" ] \
+	&& (
+           tmp_virt_wdir="$(get_wdir)/.."
+           is_proj_root 1
+           tmp_virt_wdir=""
+        ) \
+        && cond_echo "$print" "Yes" && return 0
+  cond_echo "$print" "No" && return 1 
+}  
+
+# Template
+
+get_tmpl_name() {
+  f="$(get_wdir)/template_name"
+  [ -s "$f" ] && cat "$f"
+}
+
+get_template_name() {
+  get_tmpl_name
+}
+
+set_tmpl_name() {
+  name="$1"
+  f="$(get_wdir)/template_name"
+  [ -n "$name" ] && ( echo "$name" > "$f" )
+}
+
+del_tmpl_name() {
+  f="$(get_wdir)/template_name"
+  [ -e "$f" ] && rm "$f"
+}
+
+show_avail_tmpl() {
+  veewee vbox template | awk -F "'<box_name>'" '{print $2}' | awk -F "'" '{print $2}'
+}
+
+update_tmpl() {
+  veewee-templates-update 
+}
+
+# Path tricks
+
+path_parts_count() {
+  tr '/' '\n' | wc -l
+}
+
+path2revpath() {
+  let c=0
+  tr '/' '\n' | while read line; do
+    [ $c -eq 0 ] && echo -n ".." || echo -n "/.." 
+    let c++
+  done
+}
+
+mv_to_proj_root() {
+  base="$1"
+  f1="$base"
+  b="$(basename "$f1")"
+  d1="$(dirname "$f1")"
+  [ "$(echo "$base" | path_parts_count)" -le 0 ] && return 2
+  rev="$(echo "../$base" | path2revpath)"
+  f2="$rev/$base"
+  cd "$(get_wdir)" && (
+    [ -e "$f1" ] || mkdir -p "$f1"
+    cd "$d1" && (
+      [ -e "$f2" ] || mkdir -p "$f2"
+      [ -e "$(get_basename)" ] && (
+        [ -n "$(find "$(get_basename)" -mindepth 1)" ] && (
+          mv $(get_basename)/* $f2
+        )
+        cd "$(get_basename)" && cd ".." && rm -r "$(get_basename)"
+      )
+    )
+  )
+}
+
+ln_to_proj_root() {
+  base="$1"
+  f1="$base"
+  b="$(basename "$f1")"
+  d1="$(dirname "$f1")"
+  [ "$(echo "$base" | path_parts_count)" -le 0 ] && return 2
+  rev="$(echo "../$base" | path2revpath)"
+  f2="$rev/$base"
+  cd "$(get_wdir)" && (
+    [ -e "$d1" ] || mkdir -p "$d1"
+    cd "$d1" && (
+      [ -e "$(get_basename)" ] && (
+        mv "$(get_basename)" "$(get_basename).bak.$(date "+%Y%m%d%H%M%S")"
+        #[ -L "$(get_basename)" ] && rm "$(get_basename)" || mv "$(get_basename)" "$(get_basename).bak.$(date "+%Y%m%d%H%M%S")"
+      )
+      [ ! -e "$(get_basename)" ] && (
+        [ -e "$f2" ] && ln -s $f2
+      )
+    )
+  )
+}
+
+mv_ln_to_proj_root() {
+  base="$1"
+  mv_to_proj_root "$base" 
+  del_in_proj "$base"
+  ln_to_proj_root "$base" 
+}
+
+del_in_proj() {
+  base="$1"
+  f="$(get_wdir)/$base"
+  [ ! -e "$f" ] && ( [ -L "$f" ] && ln -sf "$f" && rm "$f" )
+  [ ! -e "$f" ] || ( cd "$f" && cd ".." && rm -rf "$(basename "$f")" )
+}
+
+# Veewee definition
+
+del_def() {
+  del_in_proj "definitions/$(get_proj_name)"
+}
+
+mv_def() {
+  mv_ln_to_proj_root "definitions/$(get_proj_name)"
+}
+
+setup_def() {
+  echo veewee vbox define "$(get_proj_name)" "$(get_template_name)" --workdir="$(get_workdir)"
+  veewee vbox define "$(get_proj_name)" "$(get_template_name)" --workdir="$(get_workdir)"
+}
+
+# ISO
+
+del_iso() {
+  del_in_proj "iso"
+}
+
+mv_iso() {
+  mv_ln_to_proj_root "iso"
+}
+
+# Manage
+
+ln_self() {
+  self="$(basename "$(readlink -f "$(get_basename)")")"
+  base="$1"
+  [ -n "$base" ] && cd "$base"
+  rev="$(echo "$base" | path2revpath)"
+  ln -s $rev/$self $self
+}
+
+# Files
+
+del_files() {
+  del_iso
+  del_def
+}
+
+clean_files() {
+  del_files
+  del_box
+}
+
+mv_files() {
+  mv_iso
+  mv_def
+  ln_self
+}
+
+# Box-files
+
+get_box_name() {
+  echo "$(get_proj_name).box"
+}
+
+del_box() {
+  f="$(get_wdir)/$(get_box_name)"
+  [ ! -e "$f" ] || rm "$f"
+}
+
+get_box_download_url() {
+  f="$(get_wdir)/box_download_url"
+  [ -s "$f" ] && cat "$f"
+}
+
+download_box() {
+  wget $(get_box_download_url)
+}
+
+build_box() {
+  cmd="veewee vbox build $(get_proj_name) --workdir=$(get_workdir)"
+  n="$(get_wdir)/build_nogui"
+  f="$(get_wdir)/build_force"
+  [ -e "$n" ] && cmd="$cmd --nogui"
+  [ -e "$f" ] && cmd="$cmd --force"
+  $cmd
+}
+
+validate_box() {
+  veewee vbox validate "$(get_proj_name)" --workdir="$(get_workdir)"
+}
+
+export_box() {
+  veewee vbox export "$(get_proj_name)" --workdir="$(get_workdir)"
+}
+
+upload_box_to_dropbox() {
+  f="$(get_wdir)/$(get_box_name)"
+  [ ! -e "$f" ] || cp "$f" ~/Dropbox/
+}
+
+# Dropbox
+
+get_dropbox_dist_url() {
+  eval "$(os_detect)"
+  pref="https://www.dropbox.com/download?dl=packages"
+  case "$DIST" in 
+    Ubuntu)
+      case "$ARCH" in 
+        amd64) echo "$pref/ubuntu/dropbox_1.6.0_amd64.deb" ;;
+        i386) echo "$pref/ubuntu/dropbox_1.6.0_i386.deb" ;;
+      esac
+      ;;
+    Debian)
+      case "$ARCH" in 
+        amd64) echo "$pref/debian/dropbox_1.6.0_amd64.deb" ;;
+        i386) echo "$pref/debian/dropbox_1.6.0_i386.deb" ;;
+      esac
+      ;;
+    Fedora)
+      case "$ARCH" in 
+        amd64) echo "$pref/fedora/nautilus-dropbox-1.6.0-1.fedora.x86_64.rpm" ;;
+        i386) echo "$pref/fedora/nautilus-dropbox-1.6.0-1.fedora.i386.rpm" ;;
+      esac
+      ;;
+    *)
+      echo "Unknown"
+      ;;
+  esac
+}
+
+install_dropbox_cli() {
+  eval "$(os_detect)"
+  case "$ARCH" in
+    amd64)
+      cd ~ && wget -O - "https://www.dropbox.com/download?plat=lnx.x86_64" | tar xzf -
+      ;;
+    i386)
+      cd ~ && wget -O - "https://www.dropbox.com/download?plat=lnx.x86" | tar xzf -
+      ;;
+  esac
+}
+
+start_dropbox_svc() {
+  ~/.dropbox-dist/dropboxd &
+}
+
+stop_dropbox_svc() {
+  killall dropbox
+}
+
+install_dropbox_stat() {
+  [ -e ~/bin ] || mkdir ~/bin
+  wget -O ~/bin/dropbox.py "https://www.dropbox.com/download?dl=packages/dropbox.py"  
+  chmod +x ~/bin/dropbox.py
+}
+
+show_dropbox_stat() {
+  ~/bin/dropbox.py status
+}
+
+__dropbox_prep() {
+  dropbox_svc_stop \
+  && dropbox_dist_cli_inst \
+  && dropbox_stat_inst \
+  && dropbox_svc_start \
+  && dropbox_stat_show
+}
+
+__create() {
+  veewee_define
+        iso_ln
+	veewee_build
+	veewee_validate
+	veewee_export
+	dropbox_prep
+        dropbox_upload
+}
+
+__clean() {
+  veewee_del_def
+  delete_box
+  iso_mv
+  iso_del
+}
+
+__recreate() {
+  clean
+  create
+}
+
+# Menus
+
+apply_proj_root_menu() {
+case "$1" in
+  misc|m)
+    case "$2" in
+      os_detect|os)
+        os_detect
+        ;;
+      get_workdir|wdir|dir|w)
+        get_workdir
+        ;;
+      is_proj|p)
+        is_proj 0
+        ;;
+      is_proj_root|r)
+        is_proj_root 0
+        ;;
+      tmpl|t)
+        show_avail_tmpl
+        ;;
+      ln|l)
+        ln_self "$3" 
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <ls>"
+        echo "       os_detect|os           - Detect OS"
+        echo "       get_workdir|wdir|dir|w - Show current working dir"
+        echo "       is_proj|p              - Check if here is project dir"
+        echo "       is_proj_root|r         - Check if here is projects root dir"
+        echo "       tmpl|t                 - Show available tempaltes"
+        echo "       ln|l                   - Link to self"
+        ;;
+    esac
+    ;;
+  proj|p)
+    case "$2" in
+      is|i)
+        is_proj_root 0
+        ;;
+      set|s)
+        set_proj_root_here
+        ;;
+      unset|u)
+        unset_proj_root_here
+        ;;
+      list|ls|l)
+        show_proj_list
+        ;;
+      move|mv)
+        mv_proj_files 
+        ;;
+      clean|cl)
+        clean_proj_files 
+        ;;
+      create|c|make|mk|m)
+        mk_proj "$3" 
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <ls>"
+        echo "       is|i               - is proj root here"
+        echo "       set|s              - set proj root here"
+        echo "       unset|u            - unset proj root here"
+        echo "       list|ls|l          - show project's list"
+        echo "       move|mv            - move project's list"
+        echo "       clean|cl           - clean project's list"
+        echo "       create|c|make|mk|m - show project's list"
+        ;;
+    esac
+    ;;
+  *)
+    echo "Projects root mode"
+    echo "Usage: $(get_basename) <misc|proj>"
+    echo "       misc|m - Miscelaneous options"
+    echo "       proj|p - Projects root options"
+  esac
+}
+
+apply_proj_menu() {
+case "$1" in
+  misc|m)
+    case "$2" in
+      os_detect|os)
+        os_detect
+        ;;
+      get_workdir|wdir|dir|w)
+        get_workdir
+        ;;
+      is_proj)
+        is_proj 0
+        ;;
+      is_proj_root)
+        is_proj_root 0
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <ls>"
+        echo "       os_detect|os           - Detect OS"
+        echo "       get_workdir|wdir|dir|w - Show current working dir"
+        echo "       is_proj                - Check if here is project dir"
+        echo "       is_proj_root           - Check if here is projects root dir"
+        ;;
+    esac
+    ;;
+  proj|p)
+    case "$2" in
+      name|n)
+        get_proj_name
+        ;;
+      is|i)
+        is_proj 0
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 $2 <root|ls|is|mk>"
+        echo "       name|n - Show project name"
+        echo "       is|i   - Check if he current dir is a project"
+        ;; 
+    esac
+    ;;
+  tmpl|t)
+    case "$2" in
+      get|g)
+        get_tmpl_name
+        ;;
+      set|s)
+        set_tmpl_name "$3"
+        ;;
+      del|d)
+        del_tmpl_name
+        ;;
+      show|show|list|l)
+        show_avail_tmpl
+        ;;
+      update|up|u)
+        update_tmpl
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <get|set|del>"
+        echo "       get|g       - Show template name"
+        echo "       set|s       - Set template name"
+        echo "       del|d|rm|r  - Delete template name"
+        echo "       show|list|l - Show available templates"
+        echo "       update|up|u - Update veewee templates database"
+        ;; 
+    esac
+    ;;
+  def|d)
+    case "$2" in
+      setup|set|s)
+        setup_def 
+        ;;
+      delete|del|d|remove|rm|r)
+        del_def 
+        ;;
+      move|mv|m)
+        mv_def
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <setup|delete|move>"
+        echo "       setup|set|s              - Setup veewee definition"
+        echo "       delete|del|d|remove|rm|r - Remove definition"
+        echo "       move|mv|m                - Move definition ti projects root"
+        ;; 
+    esac
+    ;;
+  iso|i)
+    case "$2" in
+      del|rm|r|d)
+        del_iso
+        ;;
+      mv|m)
+        mv_iso
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <del|mv>"
+        echo "       del|rm|d|r   - delete ISO dir"
+        echo "       mv|m         - move ISO dir to project root"
+        ;; 
+    esac
+    ;;
+  self|s)
+    case "$2" in
+      ln|l)
+        ln_self "$3"
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <ln>"
+        echo "       ln - link self to projects root"
+        ;; 
+    esac
+    ;;
+  files|f)
+    case "$2" in
+      del|rm|r|d)
+        del_files
+        ;;
+      clean|cl|c)
+        clean_files
+        ;;
+      mv|m)
+        mv_files
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <del|mv>"
+        echo "       del|rm|d|r   - delete files"
+        echo "       clean|cl|c   - clean (definition, ISO and box) files"
+        echo "       mv|m         - move files to project root"
+        ;; 
+    esac
+    ;;
+  box|b)
+    case "$2" in
+      name|n)
+        get_box_name
+        ;;
+      download_url|dl_url|durl)
+        get_box_download_url
+        ;;
+      download|dload|dl|l)
+        download_box
+        ;;
+      delete|del|d|remove|rm|r)
+        del_box 
+        ;;
+      build|b)
+        build_box
+        ;;
+      validate|v)
+        validate_box
+        ;;
+      export|e)
+        export_box
+        ;;
+      upload|up|u)
+        upload_box_to_dropbox
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <del|mv>"
+        echo "       name|n                   - Get box name"
+        echo "       download_url|dl_rul|durl - Show download URL"
+        echo "       download|dload|dl|l      - Download box"
+        echo "       delete|del|r|remove|rm|r - Remove box"
+        echo "       build|b                  - Build box"
+        echo "       validate|v               - Validate box"
+        echo "       export|e                 - Export box"
+        echo "       upload|u                 - Upload box to dropbox"
+        ;; 
+    esac
+    ;;
+  dropbox|dbox|db)
+    case "$2" in
+      distrib|dist|d)
+        case "$3" in
+          url|u)
+            dropbox_dist_url
+            ;;
+          install|inst|i)
+            install_dropbox_dist_cli
+            ;;
+          *)
+            echo "Usage: $(get_basename) $1 $2 <url|cli_inst>"
+            echo "       url|u          - show URL's"
+            echo "       install|inst|i - install into homedir"
+            ;; 
+        esac
+        ;;
+      service|svc|s)
+        case "$3" in
+          start|run|r)
+            start_dropbox_svc
+            ;;
+          stop|kill|s)
+            stop_dropbox_svc
+            ;;
+          *)
+            echo "Usage: $(get_basename) $1 $2 <start|stop>"
+            echo "       start|run|r  - Start dropbox daemon service"
+            echo "       stop|kill|s  - Stop dropbox daemon service"
+            ;; 
+        esac
+        ;;
+      status|stat|info|i)
+        case "$3" in
+          install|inst|i)
+            install_dropbox_stat
+            ;;
+          show|s)
+            show_dropbox_stat_show
+            ;;
+          *)
+            echo "Usage: $(get_basename) $1 $2 <inst|show>"
+            echo "       install|inst|i - Download dropbox status script"
+            echo "       show|s         - Show dropbox status/info"
+            ;; 
+        esac
+        ;;
+      *)
+        echo "Usage: $(get_basename) $1 <distib|service|status|upload>"
+        echo "       distib|dist|d - dropbox distrib operations"
+        echo "       serivce|svc|s - dropbox distrib operations"
+        echo "       status|stat|i - status script operations"
+        ;; 
+    esac
+    ;;
+  *)
+    echo "Project mode"
+    echo "Usage: $(get_basename) <misc|proj|tmpl|def|box|dropbox>"
+    echo "       misc|m          - Miscelaneous options"
+    echo "       proj|p          - Project options"
+    echo "       tmpl|t          - Tempalte options"
+    echo "       def|d           - Veewee defintion options"
+    echo "       box|b           - Veewee box options"
+    echo "       iso|i           - ISO dir options"
+    echo "       self|s          - self options"
+    echo "       files|f         - Files (defs, ISO, etc) options"
+    echo "       dropbox|dbox|db - Dropbox options"
+    ;;
+esac
+}
+
+main() {
+  if is_proj_root; then
+    cond_echo 1 "Projects root mode" && apply_proj_root_menu $@
+  else
+    if is_proj; then
+      cond_echo 1 "Project mode" && apply_proj_menu $@
+    else
+      cond_echo 1 "Semiproject mode" && apply_proj_menu $@
+    fi
+  fi
+}
+
+[ "$0" = "$BASH_SOURCE" ] && main $@
